@@ -2,10 +2,16 @@
 #include "Library.h"
 #include <stdexcept>
 #include <dshow.h>
+#include <iostream>
 
 DIVO_MEDIA_BEGIN_DECLS
 #include <libavutil/imgutils.h>
 DIVO_MEDIA_END_DECLS
+
+#ifdef DIVO_MEDIA_DEVICE_STREAMING
+#include <divomedia/system/deviceenumerator.h>
+#include <divomedia/system/inputdevice.h>
+#endif
 
 using namespace divomedia::utils;
 
@@ -42,17 +48,17 @@ struct CameraFormatMapping {
 };
 
 static const CameraFormatMapping kSupportedPixelFormats[] = {
-	{ MEDIASUBTYPE_NV12,   AV_PIX_FMT_NV12, "NV12"    },
-	{ MEDIASUBTYPE_IYUV,   AV_PIX_FMT_YUV420P, "I420" },
-	{ MEDIASUBTYPE_I420,   AV_PIX_FMT_YUV420P, "I420" },
-	{ MEDIASUBTYPE_RGB32,  AV_PIX_FMT_BGR32, "RGB32"  },
-	{ MEDIASUBTYPE_ARGB32, AV_PIX_FMT_ABGR, "ARGB32"  },
-	{ MEDIASUBTYPE_RGB24,  AV_PIX_FMT_BGR24, "RGB24"  },
-	{ MEDIASUBTYPE_422P,   AV_PIX_FMT_YUV422P, "422P" },
-	{ MEDIASUBTYPE_VYUY,   AV_PIX_FMT_YUYV422, "YUY2" },
-	{ MEDIASUBTYPE_UYVY,   AV_PIX_FMT_UYVY422, "UYVY" },
-	{ MEDIASUBTYPE_YV12,   AV_PIX_FMT_UYVY422, "UV12" },
-	{ MEDIASUBTYPE_YUY2,   AV_PIX_FMT_YUYV422, "YUY2" } 
+	{ MEDIASUBTYPE_NV12,   AV_PIX_FMT_NV12,    "NV12"  },
+	{ MEDIASUBTYPE_IYUV,   AV_PIX_FMT_YUV420P, "I420"  },
+	{ MEDIASUBTYPE_I420,   AV_PIX_FMT_YUV420P, "I420"  },
+	{ MEDIASUBTYPE_RGB32,  AV_PIX_FMT_BGR32,   "RGB32" },
+	{ MEDIASUBTYPE_ARGB32, AV_PIX_FMT_ABGR,    "ARGB32"},
+	{ MEDIASUBTYPE_RGB24,  AV_PIX_FMT_BGR24,   "RGB24" },
+	{ MEDIASUBTYPE_422P,   AV_PIX_FMT_YUV422P, "422P"  },
+	{ MEDIASUBTYPE_VYUY,   AV_PIX_FMT_YUYV422, "YUY2"  },
+	{ MEDIASUBTYPE_UYVY,   AV_PIX_FMT_UYVY422, "UYVY"  },
+	{ MEDIASUBTYPE_YV12,   AV_PIX_FMT_UYVY422, "UV12"  },
+	{ MEDIASUBTYPE_YUY2,   AV_PIX_FMT_YUYV422, "YUY2"  } 
 };
 
 /// Map a AVPixelFormat to a MediaFoundation subtype.
@@ -129,7 +135,11 @@ int Library::devicesNumber()
 	updateFileList();
 	return mFileList.size();
 #endif
-    // TODO: enumerate real devices
+
+#ifdef DIVO_MEDIA_DEVICE_STREAMING
+	updateDeviceList();
+	return mDevices.size();
+#endif
 	return 0;
 }
 
@@ -146,33 +156,70 @@ const char* Library::deviceName(int index)
 		av_log(nullptr, AV_LOG_ERROR, "%s\n", e.what());
 	}
 #endif
+
+	try {
+		mCurrentDeviceFriendlyName = mDevices.at(index).name();
+		return mCurrentDeviceFriendlyName.c_str();
+	}
+	catch (std::out_of_range & e) {
+		av_log(nullptr, AV_LOG_ERROR, "%s\n", e.what());
+	}
+
 	return nullptr;
 }
 
 const char* Library::deviceFriendlyName(int index)
 {
+	updateDeviceList();
+#ifdef DIVO_MEDIA_MEDIA_FILE_STREAMING
 	try {
 		Path path = mFileList.at(index);
 		makeFriendlyName(path);
-		return mCurrentFileFriendlyName.c_str();
+		return mCurrentDeviceFriendlyName.c_str();
 	}
 	catch (std::out_of_range& e) {
 		av_log(nullptr, AV_LOG_ERROR, "%s\n", e.what());
 	}
+#endif
+
+#ifdef DIVO_MEDIA_DEVICE_STREAMING
+	try {
+		VideoDeviceDescription descr = mDevices.at(index);
+		mCurrentDeviceFriendlyName = descr.name();
+		return mCurrentDeviceFriendlyName.c_str();
+	}
+	catch (std::out_of_range & e) {
+		av_log(nullptr, AV_LOG_ERROR, "%s\n", e.what());
+	}
+
+	return nullptr;
+#endif
 }
 
 int Library::openDevice(const char* name)
 {
+	std::cout << "openDevice" << std::endl;
+	std::vector<std::shared_ptr<Decoder>> decoders;
 #ifdef DIVO_MEDIA_MEDIA_FILE_STREAMING
 	Path path = findDeviceByName(name);
 	mSpMediaFile.reset(new InputFile(path.toString()));
 
 	if (mSpMediaFile->open(InputFile::kReadOnly)) {
-		std::vector<std::shared_ptr<Decoder>> decoders = mSpMediaFile->decoders();
-		std::vector<std::shared_ptr<Decoder>>::const_iterator iter;
+#elif DIVO_MEDIA_DEVICE_STREAMING
+	updateDeviceList();
+	VideoDeviceDescription descr = findDeviceByName(name);
+	mCurrentDeviceFriendlyName = descr.name().c_str();
+	mSpDevice.reset(new InputDevice("dshow", "vMix Video YV12"));
 
-		for (iter = decoders.begin(); iter != decoders.end(); ++iter) {
-			std::shared_ptr<Decoder> decoder = *iter;
+	if (mSpDevice->open(IODevice::kReadOnly)) {
+#ifdef DIVO_MEDIA_MEDIA_FILE_STREAMING
+		std::vector<std::shared_ptr<Decoder>> decoders = mSpMediaFile->decoders();
+#elif DIVO_MEDIA_DEVICE_STREAMING
+		mSpDevice.reset(new InputDevice("dshow", name));
+		decoders = mSpDevice->decoders();
+#endif
+		for (const std::shared_ptr<Decoder>& decoder : decoders) {
+			std::shared_ptr<Decoder> decoder = decoder;
 
 			if (decoder->mediaType() == Codec::kVideo) {
 				mSpDecoder = decoder;
@@ -180,6 +227,10 @@ int Library::openDevice(const char* name)
 			}
 		}
 	}
+	else {
+		av_log(nullptr, AV_LOG_ERROR, "device %s is not open. Error %s\n", name, mSpDevice->lastError().c_str());
+	}
+
 #endif
 
 	if (mSpDecoder) {
@@ -195,14 +246,19 @@ void Library::closeDevice(int /* index */)
 #ifdef DIVO_MEDIA_MEDIA_FILE_STREAMING
 	if (mSpMediaFile) {
 		mSpMediaFile->close();
-		mSpDecoder.reset();
 		mSpMediaFile.reset();
 	}
 	else {
 		av_log(nullptr, AV_LOG_ERROR, "device is not open\n");
 	}
+#elif DIVO_MEDIA_DEVICE_STREAMING
+	if (mSpDevice) {
+		mSpDevice->close();
+		mSpDevice.reset();
+	}
 #endif
 
+	mSpDecoder.reset();
 	mSpScaler.reset();
 	//mSpFilterGraph.reset();
 	mSpCurrentFrame.reset();
@@ -241,14 +297,20 @@ std::uint8_t* Library::readFrame(int* len)
 		av_log(nullptr, AV_LOG_ERROR, "Output parameter for frame lenght is null\n");
 		return nullptr;
 	}
-
+#ifdef DIVO_MEDIA_MEDIA_FILE_STREAMING
 	if (mSpMediaFile) {
+#elif DIVO_MEDIA_DEVICE_STREAMING
+	if (mSpDevice) {
+#endif
 		if (mSpDecoder) {
 			std::shared_ptr<AVPacket> packet;
 
 			do {
+#ifdef DIVO_MEDIA_MEDIA_FILE_STREAMING
 				packet = mSpMediaFile->read();
-
+#elif DIVO_MEDIA_DEVICE_STREAMING
+				packet = mSpDevice->read();
+#endif
 				if (!packet || packet->size <= 0) {
 					break;
 				}
@@ -310,7 +372,7 @@ void Library::makeFriendlyName(const Path& path)
 	if (path.isFile() && path.exists()) {
 		std::string str = path.toString();
 		std::list<std::string> stringList = StringUtils::split(str, Path::kPathSeparator);
-		mCurrentFileFriendlyName = *stringList.rbegin();
+		mCurrentDeviceFriendlyName = *stringList.rbegin();
 	}
 }
 
@@ -327,5 +389,25 @@ Path Library::findDeviceByName(const std::string& name)
 	}
 
 	return ret;
+}
+
+#elif DIVO_MEDIA_DEVICE_STREAMING
+VideoDeviceDescription Library::findDeviceByName(const std::string& name)
+{
+	VideoDeviceDescription descr;
+
+	for (const VideoDeviceDescription &descr : mDevices) {
+		if (descr.name() == name) {
+			return descr;
+		}
+	}
+
+	return descr;
+}
+
+void Library::updateDeviceList()
+{
+	DeviceEnumerator enumerator("dshow");
+	mDevices = enumerator.availableVideoCaptureDevices();
 }
 #endif

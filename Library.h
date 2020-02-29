@@ -7,6 +7,7 @@
 #endif
 
 #include <divomedia/divomedia.h>
+#include <divomedia/system/inputdevice.h>
 #include <Windows.h>
 #include <cstdint>
 #include <memory>
@@ -48,13 +49,19 @@ public:
 	void updateFileList();
 	void makeFriendlyName(const Path& path);
 	Path findDeviceByName(const std::string& name);
+#elif DIVO_MEDIA_DEVICE_STREAMING
+	VideoDeviceDescription findDeviceByName(const std::string& name);
 #endif
 private:
 #ifdef DIVO_MEDIA_MEDIA_FILE_STREAMING
 	std::unique_ptr<InputFile> mSpMediaFile;
 	std::vector<Path> mFileList;
 	std::string mCurrentFileName;
-	std::string mCurrentFileFriendlyName;
+#elif DIVO_MEDIA_DEVICE_STREAMING
+	void updateDeviceList();
+	std::shared_ptr<InputDevice> mSpDevice;
+	std::vector<VideoDeviceDescription> mDevices;
+	std::string mCurrentDeviceFriendlyName;
 #endif
 	std::unique_ptr<Scaler> mSpScaler;
 	//std::unique_ptr<FilterGraph> mSpFilterGraph;
